@@ -50,7 +50,7 @@ around qw(get post put) => sub {
 sub _req {
     my ($self, $req) = @_;
     $req->authorization_basic($self->secret);
-    $req->header(content_type => 'application/json');
+    $req->header(content_type => 'application/vnd.api+json;revision=1.1');
     $self->_log_request($req);
     my $res = $self->ua->request($req);
     $self->_log_response($res);

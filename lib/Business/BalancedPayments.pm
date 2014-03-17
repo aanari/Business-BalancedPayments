@@ -6,14 +6,9 @@ with 'Business::BalancedPayments::HTTP';
 
 use Carp qw(croak);
 
-has secret      => (is => 'ro', required => 1                             );
-has merchant    => (is => 'ro', lazy => 1, builder => '_build_merchant'   );
-has marketplace => (is => 'ro', lazy => 1, builder => '_build_marketplace');
-has logger      => (is => 'ro');
-
-has customers_uri    => (is => 'ro', default => sub { '/v1/customers'    });
-has merchants_uri    => (is => 'ro', default => sub { '/v1/merchants'    });
-has marketplaces_uri => (is => 'ro', default => sub { '/v1/marketplaces' });
+has secret           => (is => 'ro', required => 1 );
+has marketplace      => (is => 'ro', lazy => 1, builder => '_build_marketplace');
+has logger           => (is => 'ro');
 
 sub log {
     my ($self, $msg) = @_;
@@ -21,33 +16,29 @@ sub log {
     $self->logger->DEBUG("BP: $msg");
 }
 
-sub _build_merchant {
-    my ($self) = @_;
-    my $data = $self->get($self->merchants_uri);
-    return $data->{items}[0];
-}
-
 sub _build_marketplace {
     my ($self) = @_;
-    my $data = $self->get($self->marketplaces_uri);
-    return $data->{items}[0];
+    my $data = $self->get('/marketplaces');
+    return $data->{links};
 }
 
 sub _uri {
-    my ($self, $id, $key) = @_;
-    return $id if $id =~ /\//;
-    return $self->marketplace->{$key} . "/$id";
+    my ($self, $key, $id) = @_;
+    return $id if $id && $id =~ /^\//;
+    my $uri = $self->marketplace->{"marketplaces.$key"};
+    $uri .= "/$id" if $id;
+    return $uri;
 }
 
 sub get_transactions {
     my ($self) = @_;
-    return $self->get($self->marketplaces_uri . "/transactions");
+    $self->get($self->_uri('transactions') );
 }
 
 sub get_card {
     my ($self, $id) = @_;
     croak 'The id param is missing' unless defined $id;
-    return $self->get($self->_uri($id, 'cards_uri'));
+    return $self->get($self->_uri(cards => $id));
 }
 
 sub create_card {
@@ -56,74 +47,51 @@ sub create_card {
     return $self->post($self->marketplace->{cards_uri}, $card);
 }
 
-sub get_account {
-    my ($self, $id) = @_;
-    croak 'The id param is missing' unless defined $id;
-    return $self->get($self->_uri($id, 'accounts_uri'));
-}
-
-sub get_account_by_email {
-    my ($self, $email) = @_;
-    croak 'The email param is missing' unless $email;
-    return $self->get(
-        $self->marketplace->{accounts_uri} . "?email_address=$email");
-}
-
-sub create_account {
-    my ($self, $account, %args) = @_;
-    my $card = $args{card};
-    $account ||= {};
-    croak 'The account param must be a hashref' unless ref $account eq 'HASH';
-
-    if ($card) {
-        croak 'The card param must be a hashref' unless ref $card eq 'HASH';
-        croak 'The card is missing a uri' unless $card->{uri};
-        $account->{card_uri} = $card->{uri};
-    }
-    return $self->post($self->marketplace->{accounts_uri}, $account);
-}
-
 sub get_customer {
     my ($self, $id) = @_;
     croak 'The id param is missing' unless defined $id;
-    return $self->get($self->_uri($id, 'customers_uri'));
+    return $self->get($self->_uri(customers => $id));
+}
+
+sub get_customer_by_email {
+    my ($self, $email) = @_;
+    croak 'The email param is missing' unless $email;
+    return $self->get($self->_uri(customers => "?email=$email"));
 }
 
 sub create_customer {
-    my ($self, $customer) = @_;
-    $customer ||= {};
-    croak 'The customer param must be a hashref' unless ref $customer eq 'HASH';
-    return $self->post($self->customers_uri, $customer);
+    my ($self, $cust) = @_;
+    $cust ||= {};
+    croak 'The customer param must be a hashref' unless ref $cust eq 'HASH';
+    return $self->post($self->_uri( customers => $cust->{id}));
 }
 
-sub update_account {
-    my ($self, $account) = @_;
-    croak 'The account param must be a hashref' unless ref $account eq 'HASH';
-    croak 'The account must have an id or uri field'
-        unless $account->{uri} || $account->{id};
-    my $account_uri = $account->{uri}
-        || join '/', $self->marketplace->{uri}, 'accounts', $account->{id};
-    return $self->put($account_uri, $account);
+sub update_customer {
+    my ($self, $cust) = @_;
+    croak 'The customer param must be a hashref' unless ref $cust eq 'HASH';
+    croak 'The customer must have an id or uri field'
+        unless $cust->{href} || $cust->{id};
+    my $cust_uri = $cust->{href} || $self->_uri(customers => $cust->{id});
+    return $self->put($cust_uri, $cust);
 }
 
 sub add_card {
     my ($self, $card, %args) = @_;
-    my $account = $args{account};
+    my $cust= $args{customer};
     croak 'The card param must be a hashref' unless ref $card eq 'HASH';
-    croak 'The account param must be a hashref' unless ref $account eq 'HASH';
-    croak 'The account requires a cards_uri field' unless $account->{cards_uri};
-    return $self->post($account->{cards_uri}, $card);
+    croak 'The customer param must be a hashref' unless ref $cust eq 'HASH';
+    croak 'The customer requires a href' unless $cust->{href};
+    return $self->post($cust->{href} . '/cards',  $card);
 }
 
 sub add_bank_account {
     my ($self, $bank_account, %args) = @_;
-    my $account = $args{account};
+    my $cust = $args{customer};
     croak 'The bank_account param must be a hashref'
         unless ref $bank_account eq 'HASH';
-    croak 'The account param must be a hashref' unless ref $account eq 'HASH';
-    croak 'The bank_accounts_uri field is missing from the account object'
-        unless $account->{bank_accounts_uri};
-    return $self->post($account->{bank_accounts_uri}, $bank_account);
+    croak 'The customer param must be a hashref' unless ref $cust eq 'HASH';
+    croak 'The customer object needs a href value' unless $cust->{href};
+    return $self->post($cust->{href} . '/bank_accounts', $bank_account);
 }
 
 sub create_hold {
@@ -159,7 +127,7 @@ sub capture_hold {
 sub get_debit {
     my ($self, $id) = @_;
     croak 'The id param is missing' unless defined $id;
-    return $self->get($self->_uri($id, 'debits_uri'));
+    return $self->get($self->_uri(debits => $id));
 }
 
 sub create_debit {
@@ -185,13 +153,13 @@ sub create_debit {
 sub get_hold {
     my ($self, $id) = @_;
     croak 'The id param is missing' unless defined $id;
-    return $self->get($self->_uri($id, 'holds_uri'));
+    return $self->get($self->_uri(holds => $id));
 }
 
 sub get_refund {
     my ($self, $id) = @_;
     croak 'The id param is missing' unless defined $id;
-    return $self->get($self->_uri($id, 'refunds_uri'));
+    return $self->get($self->_uri(refunds => $id));
 }
 
 sub get_refunds {
@@ -219,7 +187,7 @@ sub refund_debit {
 sub get_bank_account {
     my ($self, $id) = @_;
     croak 'The id param is missing' unless defined $id;
-    return $self->get($self->_uri($id, 'bank_accounts_uri'));
+    return $self->get($self->_uri(bank_accounts => $id));
 }
 
 sub confirm_bank_verification {
@@ -227,7 +195,7 @@ sub confirm_bank_verification {
     my $verification_id = $args{verification_id};
     croak 'The id param is missing' unless defined $id;
     croak 'The verification_id param is missing' unless defined $verification_id;
-    my $uri = join '/', $self->_uri($id, 'bank_accounts_uri'),
+    my $uri = join '/', $self->_uri(bank_accounts => $id),
         'verifications', $verification_id;
     my $amount_1 = $args{amount_1} or croak 'The amount_1 param is missing';
     my $amount_2 = $args{amount_2} or croak 'The amount_2 param is missing';
@@ -243,7 +211,7 @@ sub create_bank_account {
 sub create_bank_verification {
     my ($self, $id) = @_;
     croak 'The id param is missing' unless defined $id;
-    my $uri = $self->_uri($id, 'bank_accounts_uri') . '/verifications';
+    my $uri = $self->_uri(bank_accounts => $id) . '/verifications';
     return $self->post($uri => {});
 }
 
@@ -266,7 +234,7 @@ sub invalidate_bank_account {
 sub get_credit {
     my ($self, $id) = @_;
     croak 'The id param is missing' unless defined $id;
-    return $self->get($self->_uri($id, 'credits_uri'));
+    return $self->get($self->_uri(credits => $id));
 }
 
 sub create_credit {
@@ -433,43 +401,26 @@ Example response:
 Returns the account for the given email address.
 See L</get_account> for an example response.
 
-=head2 create_account
+=head2 create_customer
 
-    create_account()
-    create_account($account)
-    create_account($account, card => $card)
+    create_customer()
+    create_customer($customer)
 
-Creates an account.
-An account hashref is optional.
-The account hashref, if passed in, must have an email_address field:
+Creates a Customer.
+An customer hashref is optional.
+The customer hashref, if passed in, must have an C<email> field:
 
-    $bp->create_account({ email_address => 'bob@crowdtilt.com' });
+    $bp->create_customer({ email => 'bob@crowdtilt.com' });
 
-It is possible to create an account and associate it with a credit card at the
-same time.
-You can do this in 2 ways.
-You can provide a card such as one returned by calling L</get_card>:
+Returns a customer hashref.
+See L</get_customer> for an example response.
 
-    my $card = $bp->get_card($card_id);
-    $bp->create_account({ email_address => 'bob@crowdtilt.com' }, card => $card)
+=head2 update_customer
 
-Alternatively, you can provide a card_uri inside the account hashref:
+    update_customer($customer)
 
-    my $card = $bp->get_card($card_id);
-    $bp->create_account({
-        email_address => 'bob@crowdtilt.com',
-        card_uri      => $card->{uri},
-    });
-
-Returns an account hashref.
-See L</get_account> for an example response.
-
-=head2 update_account
-
-    update_account($account)
-
-Updates an account.
-It expects an account hashref, such as one returned by L</get_account>.
+Updates a customer.
+It expects a customer hashref, such as one returned by L</get_customer>.
 The account hashref must contain a uri or id field.
 
 =head2 add_card
